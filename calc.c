@@ -243,16 +243,60 @@ static int read_file(const char *path, char **data, size_t *len) {
     return 0;
 }
 
+static void usage(void) {
+    fprintf(stderr, "usage: calc -o OUTDIR input.txt\n");
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s file\n", argv[0]); return 2; }
+    const char *outdir = NULL, *input = NULL;
+
+    for (int k = 1; k < argc; k++) {
+        if (strcmp(argv[k], "-o") == 0 && k + 1 < argc) outdir = argv[++k];
+        else if (argv[k][0] != '-' && !input) input = argv[k];
+        else { fprintf(stderr, "calc: bad argument '%s'\n", argv[k]); usage(); return 2; }
+    }
+    if (!outdir || !input) { usage(); return 2; }
+
     char *data = NULL;
     size_t len = 0;
-    if (read_file(argv[1], &data, &len) != 0) { perror("read"); return 1; }
+    if (read_file(input, &data, &len) != 0) {
+        fprintf(stderr, "calc: cannot read '%s': %s\n", input, strerror(errno));
+        return 1;
+    }
+
     Buffer out = {NULL, 0, 0};
     size_t err = evaluate(data, len, &out);
-    if (err) printf("ERROR:%zu\n", err);
-    else fwrite(out.data, 1, out.len, stdout);
+    if (err) {
+        char tmp[48];
+        int n = snprintf(tmp, sizeof tmp, "ERROR:%zu\n", err);
+        out.len = 0;
+        buf_append(&out, tmp, (size_t)n);
+    }
     free(data);
+
+    if (mkdir(outdir, 0777) != 0 && errno != EEXIST) {
+        fprintf(stderr, "calc: cannot create '%s': %s\n", outdir, strerror(errno));
+        free(out.data);
+        return 1;
+    }
+
+    const char *slash = strrchr(input, '/');
+    const char *file = slash ? slash + 1 : input;
+    size_t flen = strlen(file);
+    if (flen > 4 && strcmp(file + flen - 4, ".txt") == 0) flen -= 4;
+    size_t plen = strlen(outdir) + flen + 80;
+    char *path = xrealloc(NULL, plen);
+    snprintf(path, plen, "%s/%.*s_%s_%s_%s.txt", outdir, (int)flen, file,
+             STUDENT_NAME, STUDENT_LASTNAME, STUDENT_ID);
+
+    int rc = 0;
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(out.data, 1, out.len, f) != out.len) {
+        fprintf(stderr, "calc: cannot write '%s': %s\n", path, strerror(errno));
+        rc = 1;
+    }
+    if (f && fclose(f) != 0) rc = 1;
+    free(path);
     free(out.data);
-    return 0;
+    return rc;
 }
