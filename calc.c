@@ -96,34 +96,163 @@ static void advance(Parser *p) {
     p->tok = t;
 }
 
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s file\n", argv[0]);
-        return 2;
+static long long parse_expr(Parser *p);
+
+static long long parse_primary(Parser *p) {
+    if (p->tok.kind == T_INT) {
+        long long v = p->tok.val;
+        advance(p);
+        return v;
     }
-    char *data = NULL;
-    size_t len = 0;
-    FILE *f = fopen(argv[1], "rb");
-    if (!f) {
-        perror("open");
-        return 1;
+    if (p->tok.kind == T_LPAREN) {
+        advance(p);
+        long long v = parse_expr(p);
+        if (p->err) return 0;
+
+        if (p->tok.kind != T_RPAREN) {
+            p->err = p->tok.pos + 1;
+            return 0;
+        }
+        advance(p);
+        return v;
     }
-    data = malloc(1 << 20);
-    len = fread(data, 1, (1 << 20) - 1, f);
-    fclose(f);
-    data[len] = '\0';
-    Parser p;
-    memset(&p, 0, sizeof p);
-    p.buf = data;
-    p.len = len;
-    for (;;) {
-        advance(&p);
-        printf("kind=%d pos=%zu val=%lld\n", p.tok.kind, p.tok.pos, p.tok.val);
-        if (p.tok.kind == T_EOL) {
-            if (p.pos >= p.len) break;
-            p.pos++;
+
+    p->err = p->tok.pos + 1;
+    return 0;
+}
+
+static long long int_pow(long long base, long long exp) {
+
+    unsigned long long r = 1, b = (unsigned long long)base;
+    while (exp > 0) {
+        if (exp & 1) r *= b;
+        b *= b;
+        exp >>= 1;
+    }
+    return (long long)r;
+}
+
+static long long parse_power(Parser *p) {
+    long long base = parse_primary(p);
+    if (p->err || p->tok.kind != T_POW) return base;
+    advance(p);
+    size_t exp_pos = p->tok.pos;
+    long long e = parse_power(p);
+    if (p->err) return 0;
+
+    if (e < 0) {
+        p->err = exp_pos + 1;
+        return 0;
+    }
+    return int_pow(base, e);
+}
+
+static long long parse_term(Parser *p) {
+    long long l = parse_power(p);
+    while (!p->err && (p->tok.kind == T_STAR || p->tok.kind == T_SLASH)) {
+        TokKind op = p->tok.kind;
+        advance(p);
+        size_t rhs_pos = p->tok.pos;
+        long long r = parse_power(p);
+        if (p->err) return 0;
+        if (op == T_STAR) {
+            l = (long long)((unsigned long long)l * (unsigned long long)r);
+        } else {
+
+            if (r == 0) {
+                p->err = rhs_pos + 1;
+                return 0;
+            }
+            if (r == -1) l = (long long)(0ULL - (unsigned long long)l);
+            else l = l / r;
         }
     }
+    return l;
+}
+
+static long long parse_expr(Parser *p) {
+    long long l = parse_term(p);
+    while (!p->err && (p->tok.kind == T_PLUS || p->tok.kind == T_MINUS)) {
+        TokKind op = p->tok.kind;
+        advance(p);
+        long long r = parse_term(p);
+        if (p->err) return 0;
+        if (op == T_PLUS) l = (long long)((unsigned long long)l + (unsigned long long)r);
+        else l = (long long)((unsigned long long)l - (unsigned long long)r);
+    }
+    return l;
+}
+
+static size_t evaluate(char *buf, size_t len, Buffer *out) {
+    Parser p;
+    char tmp[32];
+    size_t pos = 0;
+
+    memset(&p, 0, sizeof p);
+    p.buf = buf;
+    p.len = len;
+
+    while (pos < len) {
+        size_t i = pos;
+        while (i < len && (buf[i] == ' ' || buf[i] == '\t')) i++;
+        if (i >= len) break;
+        if (buf[i] == '\n') { pos = i + 1; continue; }
+        if (buf[i] == '#') {
+            while (i < len && buf[i] != '\n') i++;
+            pos = i < len ? i + 1 : i;
+            continue;
+        }
+
+        p.pos = pos;
+        advance(&p);
+        long long v = parse_expr(&p);
+
+        if (!p.err && p.tok.kind != T_EOL) p.err = p.tok.pos + 1;
+        if (p.err) return p.err;
+
+        int n = snprintf(tmp, sizeof tmp, "%lld\n", v);
+        buf_append(out, tmp, (size_t)n);
+        pos = p.tok.pos;
+        if (pos < len) pos++;
+    }
+    return 0;
+}
+
+static int read_file(const char *path, char **data, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    struct stat st;
+    size_t cap = 65536;
+    if (stat(path, &st) == 0 && st.st_size > 0) cap = (size_t)st.st_size + 1;
+    char *buf = xrealloc(NULL, cap + 1);
+    size_t n = 0, got;
+    do {
+        if (n == cap) {
+            cap *= 2;
+            buf = xrealloc(buf, cap + 1);
+        }
+        got = fread(buf + n, 1, cap - n, f);
+        n += got;
+    } while (got > 0);
+    int bad = ferror(f);
+    fclose(f);
+    if (bad) { free(buf); return -1; }
+    buf[n] = '\0';
+    *data = buf;
+    *len = n;
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "usage: %s file\n", argv[0]); return 2; }
+    char *data = NULL;
+    size_t len = 0;
+    if (read_file(argv[1], &data, &len) != 0) { perror("read"); return 1; }
+    Buffer out = {NULL, 0, 0};
+    size_t err = evaluate(data, len, &out);
+    if (err) printf("ERROR:%zu\n", err);
+    else fwrite(out.data, 1, out.len, stdout);
     free(data);
+    free(out.data);
     return 0;
 }
