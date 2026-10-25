@@ -1,4 +1,4 @@
-// Name Janis Vucens
+// Janis Vucens 251RDC065
 // https://github.com/Janisvucensrtu/calc
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
 // Resources used: chatgpt, geeksforgeeks, stackoverflow, cp-algorithms, cppreference, w3schools
